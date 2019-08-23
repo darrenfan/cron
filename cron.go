@@ -14,6 +14,7 @@ type Cron struct {
 	entries  []*Entry
 	stop     chan struct{}
 	add      chan *Entry
+	delete   chan *Entry
 	snapshot chan []*Entry
 	running  bool
 	ErrorLog Logger
@@ -39,6 +40,8 @@ type Logger interface {
 
 // Entry consists of a schedule and the func to execute on that schedule.
 type Entry struct {
+	// The ID of entry
+	ID string
 	// The schedule on which this job should be run.
 	Schedule Schedule
 
@@ -83,6 +86,7 @@ func NewWithLocation(location *time.Location) *Cron {
 	return &Cron{
 		entries:  nil,
 		add:      make(chan *Entry),
+		delete:   make(chan *Entry),
 		stop:     make(chan struct{}),
 		snapshot: make(chan []*Entry),
 		running:  false,
@@ -111,9 +115,19 @@ func (c *Cron) AddJob(spec string, cmd Job) error {
 	return nil
 }
 
+// DeleteJob delete entry job
+func (c *Cron) DeleteJob(entry *Entry) {
+	if c.running {
+		c.delete <- entry
+	} else {
+		c.deleteEntry(entry)
+	}
+}
+
 // Schedule adds a Job to the Cron to be run on the given schedule.
 func (c *Cron) Schedule(schedule Schedule, cmd Job) {
 	entry := &Entry{
+		ID:       time.Now().Format("2006-01-02-15-04-05.000000"),
 		Schedule: schedule,
 		Job:      cmd,
 	}
@@ -212,6 +226,10 @@ func (c *Cron) run() {
 				newEntry.Next = newEntry.Schedule.Next(now)
 				c.entries = append(c.entries, newEntry)
 
+			case deleteEntry := <-c.delete:
+				timer.Stop()
+				c.deleteEntry(deleteEntry)
+
 			case <-c.snapshot:
 				c.snapshot <- c.entrySnapshot()
 				continue
@@ -256,6 +274,18 @@ func (c *Cron) entrySnapshot() []*Entry {
 		})
 	}
 	return entries
+}
+
+func (c *Cron) deleteEntry(entry *Entry) {
+	index := 0
+	for _, e := range c.entries {
+		if e.ID == entry.ID {
+			c.entries = append(c.entries[:index], c.entries[index+1:]...)
+			break
+		}
+		index++
+	}
+	return
 }
 
 // now returns current time in c location
